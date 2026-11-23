@@ -43,9 +43,11 @@ public class AudioService : IDisposable
 
         try
         {
-            // Select installed recognizer (defaults to en-US recognizer if available)
+            // Select installed recognizer (prioritizes English - India if installed, then English)
             var recognizerInfo = SpeechRecognitionEngine.InstalledRecognizers()
-                .FirstOrDefault(r => r.Culture.Name.StartsWith("en", StringComparison.OrdinalIgnoreCase))
+                .FirstOrDefault(r => r.Culture.Name.Equals("en-IN", StringComparison.OrdinalIgnoreCase))
+                ?? SpeechRecognitionEngine.InstalledRecognizers().FirstOrDefault(r => r.Culture.Name.StartsWith("en-IN", StringComparison.OrdinalIgnoreCase))
+                ?? SpeechRecognitionEngine.InstalledRecognizers().FirstOrDefault(r => r.Culture.Name.StartsWith("en", StringComparison.OrdinalIgnoreCase))
                 ?? SpeechRecognitionEngine.InstalledRecognizers().FirstOrDefault();
 
             if (recognizerInfo != null)
@@ -62,10 +64,10 @@ public class AudioService : IDisposable
             // 1. Build and load Command Grammar for high-confidence voice actions
             LoadCommandGrammars(_recognizer);
 
-            // 2. Load Dictation Grammar for general conversational queries
+            // 2. Load Dictation Grammar with lower weight so SAPI strongly prefers assistant commands
             try
             {
-                var dictation = new DictationGrammar { Name = "FreeformDictation" };
+                var dictation = new DictationGrammar { Name = "FreeformDictation", Weight = 0.2f };
                 _recognizer.LoadGrammar(dictation);
             }
             catch (Exception ex)
@@ -114,13 +116,18 @@ public class AudioService : IDisposable
                 Console.WriteLine($"\n[Voice Recognized]: \"{text}\" (Confidence: {confidence:P0}, Grammar: {grammar})");
                 Console.ResetColor();
 
-                if (confidence >= _confidenceThreshold && !string.IsNullOrWhiteSpace(text))
+                // Lower threshold for explicit command grammars (improves accented speech tolerance)
+                float effectiveThreshold = grammar.Contains("Command") || grammar.Contains("Phrases")
+                    ? Math.Min(_confidenceThreshold, 0.18f)
+                    : _confidenceThreshold;
+
+                if (confidence >= effectiveThreshold && !string.IsNullOrWhiteSpace(text))
                 {
                     SpeechDetected?.Invoke(text);
                 }
                 else
                 {
-                    Console.WriteLine($"[AudioService]: Dropped due to confidence threshold ({confidence:P0} < {_confidenceThreshold:P0}).");
+                    Console.WriteLine($"[AudioService]: Dropped due to confidence threshold ({confidence:P0} < {effectiveThreshold:P0}).");
                 }
             };
 
@@ -129,16 +136,18 @@ public class AudioService : IDisposable
                 if (IsMuted) return;
                 string text = e.Result?.Text?.Trim() ?? string.Empty;
                 float conf = e.Result?.Confidence ?? 0f;
+                string grammar = e.Result?.Grammar?.Name ?? "Unknown";
+
                 if (!string.IsNullOrWhiteSpace(text))
                 {
                     Console.ForegroundColor = ConsoleColor.DarkYellow;
-                    Console.WriteLine($"\n[Mic Unclear]: \"{text}\" (Confidence: {conf:P0} - below threshold)");
+                    Console.WriteLine($"\n[Mic Low Confidence]: \"{text}\" (Confidence: {conf:P0}, Grammar: {grammar})");
                     Console.ResetColor();
 
-                    // If close to threshold and clear command, still dispatch on best-effort
-                    if (conf >= 0.25f && text.Length > 2)
+                    // If it matched a known command even with lower confidence (0.15+), execute on best-effort
+                    if (conf >= 0.15f && text.Length > 2)
                     {
-                        Console.WriteLine($"[AudioService]: Attempting execution on best-effort match: \"{text}\"");
+                        Console.WriteLine($"[AudioService]: Accepting accent-tolerant match: \"{text}\"");
                         SpeechDetected?.Invoke(text);
                     }
                 }
@@ -170,39 +179,48 @@ public class AudioService : IDisposable
         try
         {
             // Commands: Open / Launch apps
-            var verbs = new Choices("open", "launch", "start", "run", "please open", "please launch");
+            var verbs = new Choices("open", "launch", "start", "run", "please open", "please launch", "open the");
             var apps = new Choices(
-                "notepad", "calculator", "calc", "chrome", "google chrome",
+                "notepad", "note pad", "calculator", "calc", "calculation", "chrome", "google chrome",
                 "spotify", "files", "file explorer", "explorer", "terminal", "command prompt", "cmd",
-                "youtube", "browser", "settings");
+                "youtube", "you tube", "browser", "settings");
 
             var openGb = new GrammarBuilder();
             openGb.Append(verbs);
             openGb.Append(apps);
-            engine.LoadGrammar(new Grammar(openGb) { Name = "AppCommands" });
+            var appGrammar = new Grammar(openGb) { Name = "AppCommands", Weight = 1.0f };
+            engine.LoadGrammar(appGrammar);
 
-            // Direct phrases
+            // Direct phrases with accent-tolerant common patterns
             var phrases = new Choices(
-                "open notepad", "launch notepad", "start notepad",
-                "open calculator", "launch calculator", "open calc",
-                "lock workstation", "lock screen", "lock computer", "lock pc", "lock my screen",
-                "what time is it", "what is the time", "tell me the time", "current time",
-                "what date is it", "what is today's date",
-                "search the web", "open youtube",
+                "open notepad", "open the notepad", "open note pad", "launch notepad", "start notepad",
+                "open calculator", "open the calculator", "launch calculator", "open calc", "open calculation",
+                "open youtube", "open the youtube", "open you tube", "play youtube",
+                "open chrome", "open google chrome", "open browser",
+                "lock workstation", "lock screen", "lock the screen", "lock computer", "lock pc", "lock my screen", "lock my pc",
+                "what time is it", "what is the time", "tell me the time", "current time", "time please", "time now",
+                "what date is it", "what is today's date", "today's date",
+                "search the web", "search google",
+                "mute", "unmute", "mute microphone", "unmute microphone",
                 "hey jarvis", "hello jarvis", "how are you", "exit", "quit"
             );
-            engine.LoadGrammar(new Grammar(new GrammarBuilder(phrases)) { Name = "DirectPhrases" });
+            var directGrammar = new Grammar(new GrammarBuilder(phrases)) { Name = "DirectPhrases", Weight = 1.0f };
+            engine.LoadGrammar(directGrammar);
 
             // Web search grammar
-            var searchVerbs = new Choices("search the web for", "search for", "google");
+            var searchVerbs = new Choices("search the web for", "search for", "google", "search");
             var searchGb = new GrammarBuilder();
             searchGb.Append(searchVerbs);
             searchGb.AppendDictation();
-            engine.LoadGrammar(new Grammar(searchGb) { Name = "WebSearchCommands" });
+            var searchGrammar = new Grammar(searchGb) { Name = "WebSearchCommands", Weight = 0.8f };
+            engine.LoadGrammar(searchGrammar);
 
             // Open and type grammar
             var openAndTypeChoices = new Choices(
                 "open notepad and type",
+                "open notepad then type",
+                "open notepad type",
+                "open note pad and type",
                 "open notepad and write",
                 "in notepad type",
                 "in notepad write",
@@ -214,7 +232,8 @@ public class AudioService : IDisposable
             var openAndTypeGb = new GrammarBuilder();
             openAndTypeGb.Append(openAndTypeChoices);
             openAndTypeGb.AppendDictation();
-            engine.LoadGrammar(new Grammar(openAndTypeGb) { Name = "OpenAndTypeCommands" });
+            var typeGrammar = new Grammar(openAndTypeGb) { Name = "OpenAndTypeCommands", Weight = 1.0f };
+            engine.LoadGrammar(typeGrammar);
 
             Console.WriteLine("[AudioService]: High-confidence command grammars loaded (Apps, Typing, System Controls, Queries).");
         }

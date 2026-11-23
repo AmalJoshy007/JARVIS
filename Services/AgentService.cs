@@ -321,6 +321,15 @@ public class AgentService
     private async Task<string?> TryExecuteDirectIntentAsync(string userInput, string modelResponse)
     {
         string trimmed = userInput.Trim();
+
+        // Normalize common phonetic misrecognitions from accented speech
+        trimmed = Regex.Replace(trimmed, @"\bnote\s*pad\b", "notepad", RegexOptions.IgnoreCase);
+        trimmed = Regex.Replace(trimmed, @"\byou\s*tube\b", "youtube", RegexOptions.IgnoreCase);
+        trimmed = Regex.Replace(trimmed, @"\bcalculate\b|\bcalculation\b", "calculator", RegexOptions.IgnoreCase);
+        trimmed = Regex.Replace(trimmed, @"\bcal c\b", "calc", RegexOptions.IgnoreCase);
+        trimmed = Regex.Replace(trimmed, @"\bopen the\b", "open", RegexOptions.IgnoreCase);
+        trimmed = Regex.Replace(trimmed, @"\blaunch the\b", "launch", RegexOptions.IgnoreCase);
+
         string lower = trimmed.ToLowerInvariant();
 
         // 1. "open <app> and/then/, type/write <text>" or "launch <app> and type <text>"
