@@ -1,0 +1,29 @@
+## Visual Studio / .NET build artifacts
+[Bb]in/
+[Oo]bj/
+publish/
+[Dd]ebug/
+[Rr]elease/
+
+## Visual Studio cache
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## Rider / JetBrains
+.idea/
+*.sln.iml
+
+## VS Code
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+
+## Logs & temporary files
+*.log
+scratch/
+test_*.ps1
